@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StratOS — Options Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #0B0F1A; }
+    #root { min-height: 100vh; }
+    input[type=range] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: #252E47; outline: none; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #00D4FF; cursor: pointer; }
+    input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #00D4FF; cursor: pointer; border: none; }
+    button:focus-visible { outline: 2px solid #00D4FF; outline-offset: 2px; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0B0F1A; }
+    ::-webkit-scrollbar-thumb { background: #252E47; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    const C = {
+      bg: "#0B0F1A", surface: "#151C2F", elevated: "#1C2440", border: "#252E47",
+      accent: "#00D4FF", profit: "#00C48C", loss: "#FF4B5C", warning: "#F5A623",
+      text: "#E8ECF4", muted: "#8A94A6",
+    };
+
+    // ── Black-Scholes ─────────────────────────────────────────────
+    function cdf(x) {
+      const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+      const sign = x < 0 ? -1 : 1;
+      x = Math.abs(x) / Math.sqrt(2);
+      const t = 1 / (1 + p * x);
+      const y = 1 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
+      return 0.5 * (1 + sign * y);
+    }
+    function bsPrice(S, K, T, r, sigma, type) {
+      if (T <= 0) return type === "call" ? Math.max(S-K,0) : Math.max(K-S,0);
+      const d1 = (Math.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*Math.sqrt(T));
+      const d2 = d1 - sigma*Math.sqrt(T);
+      return type === "call"
+        ? S*cdf(d1) - K*Math.exp(-r*T)*cdf(d2)
+        : K*Math.exp(-r*T)*cdf(-d2) - S*cdf(-d1);
+    }
+    function bsGreeks(S, K, T, r, sigma, type) {
+      if (T <= 0) return { delta: type==="call"?(S>K?1:0):(S<K?-1:0), gamma:0, theta:0, vega:0 };
+      const d1 = (Math.log(S/K) + (r+0.5*sigma*sigma)*T) / (sigma*Math.sqrt(T));
+      const d2 = d1 - sigma*Math.sqrt(T);
+      const nd1 = Math.exp(-0.5*d1*d1) / Math.sqrt(2*Math.PI);
+      const delta = type==="call" ? cdf(d1) : cdf(d1)-1;
+      const gamma = nd1 / (S*sigma*Math.sqrt(T));
+      const theta = type==="call"
+        ? (-S*nd1*sigma/(2*Math.sqrt(T)) - r*K*Math.exp(-r*T)*cdf(d2))/365
+        : (-S*nd1*sigma/(2*Math.sqrt(T)) + r*K*Math.exp(-r*T)*cdf(-d2))/365;
+      const vega = S*nd1*Math.sqrt(T)/100;
+      return { delta:+delta.toFixed(4), gamma:+gamma.toFixed(4), theta:+theta.toFixed(4), vega:+vega.toFixed(4) };
+    }
+
+    // ── Strategies ────────────────────────────────────────────────
+    const STRATEGIES = {
+      coveredCall:   { name:"Covered Call", risk:"low", riskColor:C.profit, description:"Own the stock, sell a call to generate income. Caps upside but collects premium.", legs:(S,iv,T)=>[{type:"call",action:"sell",strike:Math.round(S*1.05),qty:1,iv,T}], stockPosition:100 },
+      protectivePut: { name:"Protective Put", risk:"low", riskColor:C.profit, description:"Own the stock, buy a put for downside protection. Like insurance.", legs:(S,iv,T)=>[{type:"put",action:"buy",strike:Math.round(S*0.95),qty:1,iv,T}], stockPosition:100 },
+      bullCallSpread:{ name:"Bull Call Spread", risk:"medium", riskColor:C.warning, description:"Buy a lower strike call, sell a higher strike call. Defined risk, defined reward.", legs:(S,iv,T)=>[{type:"call",action:"buy",strike:Math.round(S),qty:1,iv,T},{type:"call",action:"sell",strike:Math.round(S*1.05),qty:1,iv,T}] },
+      bearPutSpread: { name:"Bear Put Spread", risk:"medium", riskColor:C.warning, description:"Buy a higher strike put, sell a lower strike put. Profits from moderate decline.", legs:(S,iv,T)=>[{type:"put",action:"buy",strike:Math.round(S),qty:1,iv,T},{type:"put",action:"sell",strike:Math.round(S*0.95),qty:1,iv,T}] },
+      bullPutSpread: { name:"Bull Put Spread (Credit)", risk:"medium", riskColor:C.warning, description:"Sell a higher strike put, buy a lower strike put. Collect premium, limited risk.", legs:(S,iv,T)=>[{type:"put",action:"sell",strike:Math.round(S*0.97),qty:1,iv,T},{type:"put",action:"buy",strike:Math.round(S*0.92),qty:1,iv,T}] },
+      bearCallSpread:{ name:"Bear Call Spread (Credit)", risk:"medium", riskColor:C.warning, description:"Sell a lower strike call, buy a higher strike call. Profits from neutral/decline.", legs:(S,iv,T)=>[{type:"call",action:"sell",strike:Math.round(S*1.02),qty:1,iv,T},{type:"call",action:"buy",strike:Math.round(S*1.07),qty:1,iv,T}] },
+      straddle:      { name:"Straddle", risk:"high", riskColor:C.loss, description:"Buy ATM call and put. Profits from big moves in either direction. Expensive.", legs:(S,iv,T)=>[{type:"call",action:"buy",strike:Math.round(S),qty:1,iv,T},{type:"put",action:"buy",strike:Math.round(S),qty:1,iv,T}] },
+      strangle:      { name:"Strangle", risk:"high", riskColor:C.loss, description:"Buy OTM call and put. Cheaper than straddle, needs a bigger move to profit.", legs:(S,iv,T)=>[{type:"call",action:"buy",strike:Math.round(S*1.04),qty:1,iv,T},{type:"put",action:"buy",strike:Math.round(S*0.96),qty:1,iv,T}] },
+      butterfly:     { name:"Butterfly Spread", risk:"medium", riskColor:C.warning, description:"Buy low + high strike calls, sell 2 middle strike calls. Profits near the middle strike.", legs:(S,iv,T)=>[{type:"call",action:"buy",strike:Math.round(S*0.95),qty:1,iv,T},{type:"call",action:"sell",strike:Math.round(S),qty:2,iv,T},{type:"call",action:"buy",strike:Math.round(S*1.05),qty:1,iv,T}] },
+      collar:        { name:"Collar", risk:"low", riskColor:C.profit, description:"Own stock + protective put + covered call. Caps both upside and downside.", legs:(S,iv,T)=>[{type:"put",action:"buy",strike:Math.round(S*0.95),qty:1,iv,T},{type:"call",action:"sell",strike:Math.round(S*1.05),qty:1,iv,T}], stockPosition:100 },
+    };
+
+    // ── Payoff calc ───────────────────────────────────────────────
+    function calcPayoff(stratKey, S, iv, T, r=0.05) {
+      const strat = STRATEGIES[stratKey];
+      const prices = strat.legs(S,iv,T).map(leg => ({
+        ...leg,
+        price: bsPrice(S, leg.strike, T, r, leg.iv, leg.type),
+        greeks: bsGreeks(S, leg.strike, T, r, leg.iv, leg.type),
+      }));
+      const netPremium = prices.reduce((s,l) => s + (l.action==="buy"?-1:1)*l.price*l.qty, 0);
+      const range = Array.from({length:81},(_,i) => S*(0.6+i*0.01));
+      const payoffData = range.map(expS => {
+        let pnl = netPremium*100;
+        prices.forEach(l => {
+          const intr = l.type==="call" ? Math.max(expS-l.strike,0) : Math.max(l.strike-expS,0);
+          pnl += (l.action==="buy"?1:-1)*intr*100*l.qty;
+        });
+        pnl += strat.stockPosition ? (expS-S)*strat.stockPosition : 0;
+        return {x:expS, y:pnl};
+      });
+      const maxProfit = Math.max(...payoffData.map(d=>d.y));
+      const maxLoss   = Math.min(...payoffData.map(d=>d.y));
+      const breakevens = [];
+      for (let i=1;i<payoffData.length;i++) {
+        if ((payoffData[i-1].y<0) !== (payoffData[i].y<0)) {
+          const be = payoffData[i-1].x + (payoffData[i].x-payoffData[i-1].x)*(-payoffData[i-1].y)/(payoffData[i].y-payoffData[i-1].y);
+          breakevens.push(+be.toFixed(2));
+        }
+      }
+      const greeks = prices.reduce((a,l) => {
+        const s = l.action==="buy"?1:-1;
+        return { delta:a.delta+s*l.greeks.delta*l.qty, gamma:a.gamma+s*l.greeks.gamma*l.qty, theta:a.theta+s*l.greeks.theta*l.qty, vega:a.vega+s*l.greeks.vega*l.qty };
+      }, {delta:0,gamma:0,theta:0,vega:0});
+      return { payoffData, netPremium, maxProfit, maxLoss, breakevens, greeks, legs:prices, margin: maxLoss<0?Math.abs(maxLoss)*1.2:0 };
+    }
+
+    // ── SVG Payoff Chart ──────────────────────────────────────────
+    function PayoffChart({ data, S, width=520, height=200 }) {
+      const pad={t:12,r:16,b:32,l:56}, W=width-pad.l-pad.r, H=height-pad.t-pad.b;
+      const xs=data.map(d=>d.x), ys=data.map(d=>d.y);
+      const minX=Math.min(...xs), maxX=Math.max(...xs);
+      const minY=Math.min(...ys,0), maxY=Math.max(...ys,0), rangeY=maxY-minY||1;
+      const px=x=>pad.l+((x-minX)/(maxX-minX))*W;
+      const py=y=>pad.t+H-((y-minY)/rangeY)*H;
+      const zeroY=py(0);
+      const path=data.map((d,i)=>`${i===0?"M":"L"}${px(d.x).toFixed(1)},${py(d.y).toFixed(1)}`).join(" ");
+      const fillA=`${path} L${px(data[data.length-1].x)},${zeroY} L${px(data[0].x)},${zeroY} Z`;
+      const ticks=[-3,-2,-1,0,1,2,3].map(t=>{
+        const val=minY+(t+3)*rangeY/6;
+        return {val, label: val>=1000?`${(val/1000).toFixed(1)}k`:val>=0?`+${Math.round(val)}`:Math.round(val).toString()};
+      }).filter(t=>t.val>=minY&&t.val<=maxY);
+      const spotX=px(S);
+      return (
+        <svg viewBox={`0 0 ${width} ${height}`} style={{width:"100%",overflow:"visible"}}>
+          <defs>
+            <linearGradient id="gP" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.profit} stopOpacity="0.3"/><stop offset="100%" stopColor={C.profit} stopOpacity="0.02"/></linearGradient>
+            <linearGradient id="gL" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.loss} stopOpacity="0.02"/><stop offset="100%" stopColor={C.loss} stopOpacity="0.25"/></linearGradient>
+            <clipPath id="cA"><rect x={pad.l} y={pad.t} width={W} height={Math.max(0,zeroY-pad.t)}/></clipPath>
+            <clipPath id="cB"><rect x={pad.l} y={zeroY} width={W} height={Math.max(0,pad.t+H-zeroY)}/></clipPath>
+          </defs>
+          {ticks.map(t=>(
+            <g key={t.val}>
+              <line x1={pad.l} y1={py(t.val)} x2={pad.l+W} y2={py(t.val)} stroke={C.border} strokeWidth="1"/>
+              <text x={pad.l-6} y={py(t.val)+4} textAnchor="end" fill={C.muted} fontSize="10" fontFamily="JetBrains Mono,monospace">{t.label}</text>
+            </g>
+          ))}
+          <path d={fillA} fill="url(#gP)" clipPath="url(#cA)"/>
+          <path d={fillA} fill="url(#gL)" clipPath="url(#cB)"/>
+          <line x1={pad.l} y1={zeroY} x2={pad.l+W} y2={zeroY} stroke={C.muted} strokeWidth="1" strokeDasharray="4 3"/>
+          <path d={path} fill="none" stroke={C.accent} strokeWidth="2.5" strokeLinejoin="round"/>
+          <line x1={spotX} y1={pad.t} x2={spotX} y2={pad.t+H} stroke={C.warning} strokeWidth="1.5" strokeDasharray="5 3"/>
+          <text x={spotX} y={pad.t-2} textAnchor="middle" fill={C.warning} fontSize="9" fontFamily="JetBrains Mono,monospace">SPOT</text>
+          {[0.7,0.85,1.0,1.15,1.3].map(r=>{
+            const xv=S*r;
+            if(xv<minX||xv>maxX) return null;
+            return <text key={r} x={px(xv)} y={pad.t+H+16} textAnchor="middle" fill={C.muted} fontSize="9" fontFamily="JetBrains Mono,monospace">{xv.toFixed(0)}</text>;
+          })}
+          <text x={pad.l+W/2} y={pad.t+H+28} textAnchor="middle" fill={C.muted} fontSize="9">Underlying Price at Expiry (£)</text>
+        </svg>
+      );
+    }
+
+    // ── Small components ──────────────────────────────────────────
+    function RiskBadge({risk,color}) {
+      return <span style={{background:`${color}22`,border:`1px solid ${color}55`,color,borderRadius:4,padding:"2px 8px",fontSize:11,fontFamily:"Space Grotesk,sans-serif",fontWeight:600,letterSpacing:"0.05em",textTransform:"uppercase"}}>{risk}</span>;
+    }
+    function GreekBadge({label,value,hint}) {
+      const col=value>0?C.profit:value<0?C.loss:C.muted;
+      return (
+        <div style={{background:C.elevated,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",minWidth:80,textAlign:"center"}}>
+          <div style={{color:C.muted,fontSize:10,fontFamily:"JetBrains Mono,monospace",marginBottom:4,letterSpacing:"0.05em"}}>{label}</div>
+          <div style={{color:col,fontSize:18,fontFamily:"JetBrains Mono,monospace",fontWeight:700}}>{value>=0?"+":""}{value.toFixed(3)}</div>
+          <div style={{color:C.muted,fontSize:9,marginTop:3}}>{hint}</div>
+        </div>
+      );
+    }
+    function ScenarioTable({baseS,stratKey,iv,T}) {
+      return (
+        <div style={{background:C.elevated,borderRadius:10,overflow:"hidden",border:`1px solid ${C.border}`}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",padding:"8px 14px",background:C.border,fontSize:10,color:C.muted,fontFamily:"Space Grotesk,sans-serif",fontWeight:600,letterSpacing:"0.05em"}}>
+            <span>MOVE</span><span style={{textAlign:"right"}}>SPOT</span><span style={{textAlign:"right"}}>P&L</span>
+          </div>
+          {[-20,-10,-5,5,10,20].map(pct=>{
+            const newS=baseS*(1+pct/100);
+            const r=calcPayoff(stratKey,newS,iv,0.001);
+            const base=calcPayoff(stratKey,baseS,iv,T);
+            const change=(r.netPremium*100)-(base.netPremium*100);
+            const col=change>=0?C.profit:C.loss;
+            return (
+              <div key={pct} style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",padding:"9px 14px",borderTop:`1px solid ${C.border}`,alignItems:"center"}}>
+                <span style={{color:pct<0?C.loss:C.profit,fontFamily:"JetBrains Mono,monospace",fontSize:13,fontWeight:700}}>{pct>0?"+":""}{pct}%</span>
+                <span style={{textAlign:"right",color:C.text,fontFamily:"JetBrains Mono,monospace",fontSize:12}}>£{newS.toFixed(0)}</span>
+                <span style={{textAlign:"right",color:col,fontFamily:"JetBrains Mono,monospace",fontSize:12,fontWeight:600}}>{change>=0?"+":""}£{Math.round(change)}</span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ── Onboarding ────────────────────────────────────────────────
+    function OnboardingScreen({onComplete}) {
+      const [step,setStep]=useState(0);
+      const [profile,setProfile]=useState({name:"",exp:null,goal:null,loss:null});
+      const questions=[
+        {q:"How long have you traded options?",field:"exp",opts:[{v:"none",label:"Never traded options",sub:"I'm here to learn"},{v:"beginner",label:"Under 1 year",sub:"Getting started"},{v:"intermediate",label:"1–3 years",sub:"Comfortable with basics"},{v:"experienced",label:"3+ years",sub:"Strategies & Greeks"}]},
+        {q:"What's your primary objective?",field:"goal",opts:[{v:"income",label:"Generate income",sub:"Selling premium regularly"},{v:"protection",label:"Hedge existing positions",sub:"Manage downside risk"},{v:"speculation",label:"Directional speculation",sub:"Express market views"},{v:"learning",label:"Learn & practice",sub:"Paper trading first"}]},
+        {q:"What's the most you're willing to lose on a single trade?",field:"loss",opts:[{v:"low",label:"Up to £500",sub:"Conservative"},{v:"medium",label:"£500 – £2,000",sub:"Moderate"},{v:"high",label:"£2,000 – £5,000",sub:"Aggressive"},{v:"very_high",label:"Over £5,000",sub:"Speculative"}]},
+      ];
+      if (step===0) return (
+        <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24,fontFamily:"Inter,sans-serif"}}>
+          <div style={{maxWidth:440,width:"100%"}}>
+            <div style={{marginBottom:40,textAlign:"center"}}>
+              <div style={{color:C.accent,fontSize:13,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.15em",textTransform:"uppercase",marginBottom:16}}>Options Platform</div>
+              <h1 style={{color:C.text,fontSize:34,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",lineHeight:1.1,margin:0}}>Trade smarter.<br/><span style={{color:C.accent}}>Know your risk.</span></h1>
+              <p style={{color:C.muted,fontSize:15,marginTop:16,lineHeight:1.6}}>Before you build your first strategy, we need to understand your experience and goals.</p>
+            </div>
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:20,marginBottom:24}}>
+              <div style={{color:C.warning,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600,marginBottom:8}}>⚠ RISK NOTICE</div>
+              <p style={{color:C.muted,fontSize:13,margin:0,lineHeight:1.5}}>Options carry significant risk including potential loss of entire premium paid. Short options carry theoretically unlimited risk. This platform is for educational and paper trading purposes only.</p>
+            </div>
+            <div style={{marginBottom:20}}>
+              <label style={{color:C.muted,fontSize:12,display:"block",marginBottom:6,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.05em"}}>YOUR NAME (OPTIONAL)</label>
+              <input value={profile.name} onChange={e=>setProfile(p=>({...p,name:e.target.value}))} placeholder="e.g. Swami" style={{width:"100%",background:C.elevated,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",color:C.text,fontSize:14,fontFamily:"Inter,sans-serif",outline:"none"}}/>
+            </div>
+            <button onClick={()=>setStep(1)} style={{width:"100%",background:C.accent,color:C.bg,border:"none",borderRadius:8,padding:"14px",fontSize:15,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",cursor:"pointer",letterSpacing:"0.03em"}}>Begin Profile →</button>
+          </div>
+        </div>
+      );
+      const qi=step-1;
+      if (qi<questions.length) {
+        const q=questions[qi];
+        return (
+          <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24,fontFamily:"Inter,sans-serif"}}>
+            <div style={{maxWidth:480,width:"100%"}}>
+              <div style={{color:C.muted,fontSize:12,fontFamily:"Space Grotesk,sans-serif",marginBottom:12}}>STEP {step} OF {questions.length+1}</div>
+              <div style={{height:3,background:C.border,borderRadius:2,marginBottom:32}}>
+                <div style={{height:3,background:C.accent,borderRadius:2,width:`${(step/(questions.length+1))*100}%`,transition:"width 0.4s"}}/>
+              </div>
+              <h2 style={{color:C.text,fontSize:24,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",marginBottom:28}}>{q.q}</h2>
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                {q.opts.map(opt=>(
+                  <button key={opt.v} onClick={()=>{const u={...profile,[q.field]:opt.v};setProfile(u);if(qi+1>=questions.length)onComplete(u);else setStep(s=>s+1);}} style={{background:profile[q.field]===opt.v?`${C.accent}22`:C.surface,border:`1px solid ${profile[q.field]===opt.v?C.accent:C.border}`,borderRadius:10,padding:"14px 18px",textAlign:"left",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div>
+                      <div style={{color:C.text,fontSize:14,fontWeight:600,fontFamily:"Space Grotesk,sans-serif"}}>{opt.label}</div>
+                      <div style={{color:C.muted,fontSize:12,marginTop:2}}>{opt.sub}</div>
+                    </div>
+                    {profile[q.field]===opt.v&&<span style={{color:C.accent,fontSize:18}}>✓</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+      return null;
+    }
+
+    // ── Main App ──────────────────────────────────────────────────
+    function App() {
+      const [screen,setScreen]=useState("onboarding");
+      const [profile,setProfile]=useState(null);
+      const [selectedStrat,setSelectedStrat]=useState(null);
+      const [spotPrice,setSpotPrice]=useState(100);
+      const [ivPct,setIvPct]=useState(25);
+      const [daysToExp,setDaysToExp]=useState(30);
+      const [ticker,setTicker]=useState("AAPL");
+      const [positions,setPositions]=useState([]);
+
+      const T=daysToExp/365, iv=ivPct/100;
+      const result=useMemo(()=>selectedStrat?calcPayoff(selectedStrat,spotPrice,iv,T):null,[selectedStrat,spotPrice,iv,T]);
+
+      const addPosition=()=>{
+        if(!result||!selectedStrat) return;
+        const cost=Math.abs(result.netPremium)*100;
+        setPositions(prev=>[{id:Date.now(),strat:STRATEGIES[selectedStrat].name,ticker,entry:spotPrice,expiry:new Date(Date.now()+daysToExp*86400000).toLocaleDateString("en-GB"),cost:cost.toFixed(0),pnl:(result.netPremium*100).toFixed(0),risk:STRATEGIES[selectedStrat].risk},...prev]);
+        setScreen("positions");
+      };
+
+      // header shared
+      const Header=({title,back})=>(
+        <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:56,position:"sticky",top:0,zIndex:100}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            {back&&<button onClick={()=>setScreen(back)} style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 12px",color:C.muted,fontSize:12,cursor:"pointer"}}>← Back</button>}
+            <span style={{color:C.accent,fontFamily:"Space Grotesk,sans-serif",fontWeight:700,fontSize:17,letterSpacing:"0.03em"}}>StratOS</span>
+            {title&&<span style={{color:C.muted,fontSize:13}}>/ {title}</span>}
+          </div>
+          {!back&&(
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              {["dashboard","positions"].map(s=>(
+                <button key={s} onClick={()=>setScreen(s)} style={{background:screen===s?`${C.accent}18`:"transparent",border:`1px solid ${screen===s?C.accent:"transparent"}`,borderRadius:6,padding:"5px 14px",color:screen===s?C.accent:C.muted,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600,cursor:"pointer",textTransform:"capitalize",letterSpacing:"0.05em"}}>{s}</button>
+              ))}
+              <div style={{background:`${C.profit}22`,border:`1px solid ${C.profit}44`,borderRadius:6,padding:"4px 10px",color:C.profit,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600}}>{profile?.name||"Trader"} • PAPER</div>
+            </div>
+          )}
+        </div>
+      );
+
+      // ── Dashboard ──
+      if (screen==="dashboard") return (
+        <div style={{minHeight:"100vh",background:C.bg,fontFamily:"Inter,sans-serif",color:C.text}}>
+          <Header/>
+          <div style={{maxWidth:1100,margin:"0 auto",padding:"28px 24px"}}>
+            {/* Market bar */}
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px",marginBottom:28,display:"flex",flexWrap:"wrap",gap:20,alignItems:"center"}}>
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                <label style={{color:C.muted,fontSize:10,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em"}}>UNDERLYING</label>
+                <input value={ticker} onChange={e=>setTicker(e.target.value.toUpperCase())} style={{background:C.elevated,border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",color:C.accent,fontSize:15,fontFamily:"Space Grotesk,sans-serif",fontWeight:700,width:80,outline:"none"}}/>
+              </div>
+              {[{label:"SPOT PRICE (£)",value:spotPrice,set:setSpotPrice,min:10,max:500},{label:"IMPLIED VOL (%)",value:ivPct,set:setIvPct,min:5,max:100},{label:"DAYS TO EXPIRY",value:daysToExp,set:setDaysToExp,min:1,max:365}].map(({label,value,set,min,max})=>(
+                <div key={label} style={{display:"flex",flexDirection:"column",gap:4,flex:1,minWidth:140}}>
+                  <label style={{color:C.muted,fontSize:10,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em"}}>{label}</label>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <input type="range" min={min} max={max} step={1} value={value} onChange={e=>set(+e.target.value)} style={{flex:1,cursor:"pointer"}}/>
+                    <span style={{color:C.text,fontSize:14,fontFamily:"JetBrains Mono,monospace",fontWeight:600,minWidth:38,textAlign:"right"}}>{value}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {/* Strategy grid */}
+            <div style={{marginBottom:16,color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em"}}>STRATEGY LIBRARY — {Object.keys(STRATEGIES).length} STRATEGIES</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
+              {Object.entries(STRATEGIES).map(([key,strat])=>{
+                const r=calcPayoff(key,spotPrice,iv,T);
+                return (
+                  <div key={key} onClick={()=>{setSelectedStrat(key);setScreen("review");}} style={{background:selectedStrat===key?`${C.accent}12`:C.surface,border:`1px solid ${selectedStrat===key?C.accent:C.border}`,borderRadius:12,padding:18,cursor:"pointer",transition:"border-color 0.15s"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+                      <h3 style={{color:C.text,fontSize:14,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",margin:0}}>{strat.name}</h3>
+                      <RiskBadge risk={strat.risk} color={strat.riskColor}/>
+                    </div>
+                    <p style={{color:C.muted,fontSize:12,margin:"0 0 14px",lineHeight:1.5}}>{strat.description}</p>
+                    <div style={{marginBottom:12}}><PayoffChart data={r.payoffData} S={spotPrice} width={300} height={100}/></div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:11,fontFamily:"JetBrains Mono,monospace"}}>
+                      <span style={{color:r.netPremium>0?C.profit:C.warning}}>{r.netPremium>0?"Credit":"Debit"}: £{Math.abs(r.netPremium*100).toFixed(0)}</span>
+                      <span style={{color:C.muted}}>{r.breakevens.length>0?`BE: £${r.breakevens[0].toFixed(0)}`:"No BE"}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+
+      // ── Review ──
+      if (screen==="review"&&result&&selectedStrat) {
+        const strat=STRATEGIES[selectedStrat];
+        return (
+          <div style={{minHeight:"100vh",background:C.bg,fontFamily:"Inter,sans-serif",color:C.text}}>
+            <Header title={strat.name} back="dashboard"/>
+            <div style={{maxWidth:1100,margin:"0 auto",padding:"28px 24px"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 380px",gap:24,alignItems:"start"}}>
+                <div>
+                  <div style={{marginBottom:20}}>
+                    <h1 style={{color:C.text,fontSize:26,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",margin:"0 0 6px"}}>{strat.name}</h1>
+                    <p style={{color:C.muted,fontSize:14,margin:0,lineHeight:1.6}}>{strat.description}</p>
+                  </div>
+                  <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:20,marginBottom:20}}>
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:12}}>PAYOFF AT EXPIRY — {ticker}</div>
+                    <PayoffChart data={result.payoffData} S={spotPrice} width={520} height={220}/>
+                  </div>
+                  <div style={{marginBottom:20}}>
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:12}}>AGGREGATE GREEKS</div>
+                    <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                      <GreekBadge label="DELTA Δ" value={result.greeks.delta} hint="£ per £1 spot"/>
+                      <GreekBadge label="GAMMA Γ" value={result.greeks.gamma} hint="Delta change rate"/>
+                      <GreekBadge label="THETA Θ" value={result.greeks.theta} hint="Daily time decay"/>
+                      <GreekBadge label="VEGA ν" value={result.greeks.vega} hint="Per 1% vol"/>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:12}}>SCENARIO STRESS TEST</div>
+                    <ScenarioTable baseS={spotPrice} stratKey={selectedStrat} iv={iv} T={T}/>
+                  </div>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:16}}>
+                  <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:20}}>
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:16}}>STRATEGY METRICS</div>
+                    {[
+                      {label:"Max Profit",value:result.maxProfit===Infinity?"Unlimited":`£${Math.round(result.maxProfit)}`,color:C.profit},
+                      {label:"Max Loss",value:result.maxLoss===-Infinity?"Unlimited":`£${Math.round(result.maxLoss)}`,color:C.loss},
+                      {label:"Net Premium",value:`${result.netPremium>0?"+":""}£${(result.netPremium*100).toFixed(0)}`,color:result.netPremium>=0?C.profit:C.warning},
+                      {label:"Break-even(s)",value:result.breakevens.length>0?result.breakevens.map(b=>`£${b.toFixed(0)}`).join(", "):"N/A",color:C.text},
+                      {label:"Margin Required",value:`£${Math.round(result.margin)}`,color:C.warning},
+                    ].map(({label,value,color})=>(
+                      <div key={label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
+                        <span style={{color:C.muted,fontSize:13}}>{label}</span>
+                        <span style={{color,fontSize:14,fontFamily:"JetBrains Mono,monospace",fontWeight:600}}>{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:20}}>
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:14}}>OPTION LEGS</div>
+                    {result.legs.map((leg,i)=>(
+                      <div key={i} style={{background:C.elevated,borderRadius:8,padding:"10px 12px",marginBottom:8,border:`1px solid ${C.border}`}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                          <span style={{color:leg.action==="buy"?C.profit:C.loss,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:700}}>{leg.action.toUpperCase()} {leg.qty}x {leg.type.toUpperCase()}</span>
+                          <span style={{color:C.text,fontSize:12,fontFamily:"JetBrains Mono,monospace"}}>£{leg.price.toFixed(2)}</span>
+                        </div>
+                        <div style={{display:"flex",gap:10}}>
+                          <span style={{color:C.muted,fontSize:11}}>K: £{leg.strike}</span>
+                          <span style={{color:C.muted,fontSize:11}}>T: {daysToExp}d</span>
+                          <span style={{color:C.muted,fontSize:11}}>IV: {ivPct}%</span>
+                        </div>
+                      </div>
+                    ))}
+                    {strat.stockPosition&&(
+                      <div style={{background:C.elevated,borderRadius:8,padding:"10px 12px",border:`1px solid ${C.border}`}}>
+                        <span style={{color:C.accent,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:700}}>LONG {strat.stockPosition} SHARES</span>
+                        <span style={{color:C.muted,fontSize:11,float:"right"}}>£{(spotPrice*strat.stockPosition).toFixed(0)} notional</span>
+                      </div>
+                    )}
+                  </div>
+                  {(result.maxLoss===-Infinity||result.greeks.theta<-0.1||result.margin>1000)&&(
+                    <div style={{background:`${C.warning}12`,border:`1px solid ${C.warning}44`,borderRadius:12,padding:16}}>
+                      <div style={{color:C.warning,fontSize:11,fontFamily:"Space Grotesk,sans-serif",fontWeight:700,marginBottom:8,letterSpacing:"0.08em"}}>⚠ RISK WARNINGS</div>
+                      {result.maxLoss===-Infinity&&<p style={{color:C.muted,fontSize:12,margin:"0 0 6px"}}>Unlimited loss potential: short options can lose far more than premium received.</p>}
+                      {result.greeks.theta<-0.1&&<p style={{color:C.muted,fontSize:12,margin:"0 0 6px"}}>High theta exposure: this position loses value daily.</p>}
+                      {result.margin>1000&&<p style={{color:C.muted,fontSize:12,margin:0}}>Significant margin required (£{Math.round(result.margin)}). Ensure collateral is available.</p>}
+                    </div>
+                  )}
+                  <button onClick={addPosition} style={{background:C.accent,color:C.bg,border:"none",borderRadius:10,padding:"15px",fontSize:15,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",cursor:"pointer",letterSpacing:"0.03em"}}>Paper Trade — Execute →</button>
+                  <p style={{color:C.muted,fontSize:11,textAlign:"center",margin:0}}>Paper trade only — no real money involved</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ── Positions ──
+      if (screen==="positions") return (
+        <div style={{minHeight:"100vh",background:C.bg,fontFamily:"Inter,sans-serif",color:C.text}}>
+          <Header title="Positions" back="dashboard"/>
+          <div style={{maxWidth:1100,margin:"0 auto",padding:"28px 24px"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:14,marginBottom:28}}>
+              {[
+                {label:"OPEN POSITIONS",value:positions.length,color:C.text},
+                {label:"TOTAL PREMIUM",value:`£${positions.reduce((s,p)=>s+ +p.cost,0)}`,color:C.warning},
+                {label:"PAPER P&L",value:`£${positions.reduce((s,p)=>s+ +p.pnl,0)}`,color:positions.reduce((s,p)=>s+ +p.pnl,0)>=0?C.profit:C.loss},
+              ].map(({label,value,color})=>(
+                <div key={label} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,padding:"16px 20px"}}>
+                  <div style={{color:C.muted,fontSize:10,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.12em",marginBottom:8}}>{label}</div>
+                  <div style={{color,fontSize:24,fontFamily:"JetBrains Mono,monospace",fontWeight:700}}>{value}</div>
+                </div>
+              ))}
+            </div>
+            {positions.length===0?(
+              <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:48,textAlign:"center"}}>
+                <div style={{color:C.muted,fontSize:40,marginBottom:16}}>📊</div>
+                <h3 style={{color:C.text,fontFamily:"Space Grotesk,sans-serif",margin:"0 0 10px"}}>No positions yet</h3>
+                <p style={{color:C.muted,fontSize:14,margin:"0 0 20px"}}>Build and execute a paper trade to see it here.</p>
+                <button onClick={()=>setScreen("dashboard")} style={{background:C.accent,color:C.bg,border:"none",borderRadius:8,padding:"10px 24px",fontSize:14,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",cursor:"pointer"}}>Browse Strategies →</button>
+              </div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                {positions.map(pos=>(
+                  <div key={pos.id} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+                      <div>
+                        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+                          <span style={{color:C.accent,fontSize:15,fontFamily:"Space Grotesk,sans-serif",fontWeight:700}}>{pos.ticker}</span>
+                          <span style={{color:C.text,fontSize:14,fontFamily:"Space Grotesk,sans-serif"}}>{pos.strat}</span>
+                          <RiskBadge risk={pos.risk} color={pos.risk==="low"?C.profit:pos.risk==="medium"?C.warning:C.loss}/>
+                        </div>
+                        <div style={{display:"flex",gap:18}}>
+                          <span style={{color:C.muted,fontSize:12}}>Entry: <span style={{color:C.text,fontFamily:"JetBrains Mono,monospace"}}>£{pos.entry}</span></span>
+                          <span style={{color:C.muted,fontSize:12}}>Expiry: <span style={{color:C.text}}>{pos.expiry}</span></span>
+                          <span style={{color:C.muted,fontSize:12}}>Cost: <span style={{color:C.warning,fontFamily:"JetBrains Mono,monospace"}}>£{pos.cost}</span></span>
+                        </div>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{color:+pos.pnl>=0?C.profit:C.loss,fontSize:22,fontFamily:"JetBrains Mono,monospace",fontWeight:700}}>{+pos.pnl>=0?"+":""}£{pos.pnl}</div>
+                        <div style={{color:C.muted,fontSize:11,marginTop:3}}>Unrealised P&L</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+
+      // ── Onboarding ──
+      return <OnboardingScreen onComplete={p=>{setProfile(p);setScreen("dashboard");}}/>;
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>
