@@ -281,21 +281,58 @@
       // header shared
       const Header=({title,back})=>(
         <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:56,position:"sticky",top:0,zIndex:100}}>
-          <div style={{display:"flex",alignItems:"center",gap:12}}>
-            {back&&<button onClick={()=>setScreen(back)} style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 12px",color:C.muted,fontSize:12,cursor:"pointer"}}>← Back</button>}
-            <span style={{color:C.accent,fontFamily:"Space Grotesk,sans-serif",fontWeight:700,fontSize:17,letterSpacing:"0.03em"}}>StratOS</span>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {/* Home button — always visible on every screen, returns to dashboard */}
+            <button onClick={()=>setScreen("dashboard")} title="Go to home / dashboard" style={{display:"flex",alignItems:"center",gap:6,background:screen==="dashboard"?`${C.accent}18`:"transparent",border:`1px solid ${screen==="dashboard"?C.accent:C.border}`,borderRadius:6,padding:"5px 12px",color:screen==="dashboard"?C.accent:C.muted,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600,cursor:"pointer"}}>
+              <span style={{fontSize:14}}>⌂</span> Home
+            </button>
+            {/* Logo also acts as home */}
+            <span onClick={()=>setScreen("dashboard")} style={{color:C.accent,fontFamily:"Space Grotesk,sans-serif",fontWeight:700,fontSize:17,letterSpacing:"0.03em",cursor:"pointer"}}>StratOS</span>
             {title&&<span style={{color:C.muted,fontSize:13}}>/ {title}</span>}
           </div>
-          {!back&&(
-            <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              {["dashboard","positions"].map(s=>(
-                <button key={s} onClick={()=>setScreen(s)} style={{background:screen===s?`${C.accent}18`:"transparent",border:`1px solid ${screen===s?C.accent:"transparent"}`,borderRadius:6,padding:"5px 14px",color:screen===s?C.accent:C.muted,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600,cursor:"pointer",textTransform:"capitalize",letterSpacing:"0.05em"}}>{s}</button>
-              ))}
-              <div style={{background:`${C.profit}22`,border:`1px solid ${C.profit}44`,borderRadius:6,padding:"4px 10px",color:C.profit,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600}}>{profile?.name||"Trader"} • PAPER</div>
-            </div>
-          )}
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={()=>setScreen("positions")} style={{background:screen==="positions"?`${C.accent}18`:"transparent",border:`1px solid ${screen==="positions"?C.accent:"transparent"}`,borderRadius:6,padding:"5px 14px",color:screen==="positions"?C.accent:C.muted,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600,cursor:"pointer",letterSpacing:"0.05em"}}>Positions</button>
+            <button onClick={()=>setScreen("guide")} title="How to use this platform" style={{background:screen==="guide"?`${C.accent}18`:"transparent",border:`1px solid ${screen==="guide"?C.accent:C.border}`,borderRadius:6,padding:"5px 12px",color:screen==="guide"?C.accent:C.muted,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600,cursor:"pointer",letterSpacing:"0.05em"}}>? Guide</button>
+            <div style={{background:`${C.profit}22`,border:`1px solid ${C.profit}44`,borderRadius:6,padding:"4px 10px",color:C.profit,fontSize:12,fontFamily:"Space Grotesk,sans-serif",fontWeight:600}}>{profile?.name||"Trader"} • PAPER</div>
+          </div>
         </div>
       );
+
+      // ── Plain-English interpreter: turns payoff numbers into investor language ──
+      function plainEnglish(stratKey, result, S, ticker) {
+        const mp = result.maxProfit, ml = result.maxLoss, be = result.breakevens;
+        const fmt = n => (n>=0?"+":"−") + "£" + Math.abs(Math.round(n)).toLocaleString();
+        const profitDesc = mp===Infinity ? "your profit is unlimited — it grows the more the stock rises"
+          : `the most you can make is £${Math.round(mp).toLocaleString()}`;
+        const lossDesc = ml===-Infinity ? "your loss is theoretically unlimited"
+          : `the most you can lose is £${Math.abs(Math.round(ml)).toLocaleString()}`;
+        const beDesc = be.length===0 ? "This position has no simple break-even point."
+          : be.length===1 ? `You start making money once ${ticker} moves past £${be[0].toFixed(0)} at expiry.`
+          : `You make money if ${ticker} stays between £${Math.min(...be).toFixed(0)} and £${Math.max(...be).toFixed(0)} at expiry.`;
+        return { profitDesc, lossDesc, beDesc };
+      }
+
+      // ── Investor outcome scenarios: 3 concrete what-if cases in plain money terms ──
+      function investorScenarios(stratKey, S, iv, T) {
+        const cases = [
+          { label:"If it goes UP 10%",   move: 1.10, color:C.profit },
+          { label:"If it stays FLAT",     move: 1.00, color:C.muted  },
+          { label:"If it goes DOWN 10%",  move: 0.90, color:C.loss   },
+        ];
+        const base = calcPayoff(stratKey, S, iv, T);
+        return cases.map(c => {
+          const expS = S * c.move;
+          // P&L at expiry for this ending price
+          const strat = STRATEGIES[stratKey];
+          let pnl = base.netPremium*100;
+          base.legs.forEach(l => {
+            const intr = l.type==="call" ? Math.max(expS-l.strike,0) : Math.max(l.strike-expS,0);
+            pnl += (l.action==="buy"?1:-1)*intr*100*l.qty;
+          });
+          pnl += strat.stockPosition ? (expS-S)*strat.stockPosition : 0;
+          return { ...c, expS, pnl };
+        });
+      }
 
       // ── Dashboard ──
       if (screen==="dashboard") return (
@@ -348,7 +385,7 @@
         const strat=STRATEGIES[selectedStrat];
         return (
           <div style={{minHeight:"100vh",background:C.bg,fontFamily:"Inter,sans-serif",color:C.text}}>
-            <Header title={strat.name} back="dashboard"/>
+            <Header title={strat.name}/>
             <div style={{maxWidth:1100,margin:"0 auto",padding:"28px 24px"}}>
               <div style={{display:"grid",gridTemplateColumns:"1fr 380px",gap:24,alignItems:"start"}}>
                 <div>
@@ -357,11 +394,43 @@
                     <p style={{color:C.muted,fontSize:14,margin:0,lineHeight:1.6}}>{strat.description}</p>
                   </div>
                   <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:20,marginBottom:20}}>
-                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:12}}>PAYOFF AT EXPIRY — {ticker}</div>
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:6}}>PAYOFF AT EXPIRY — {ticker}</div>
+                    <div style={{color:C.muted,fontSize:11,marginBottom:12,lineHeight:1.5}}>The line shows your profit (green zone) or loss (red zone) for every possible price of {ticker} on expiry day. Where the line crosses £0 is your break-even.</div>
                     <PayoffChart data={result.payoffData} S={spotPrice} width={520} height={220}/>
                   </div>
+
+                  {/* ── WHAT THIS MEANS — plain English for investors ── */}
+                  {(()=>{ const pe = plainEnglish(selectedStrat, result, spotPrice, ticker); return (
+                    <div style={{background:`${C.accent}0D`,border:`1px solid ${C.accent}40`,borderRadius:12,padding:20,marginBottom:20}}>
+                      <div style={{color:C.accent,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:12,fontWeight:700}}>💡 WHAT THIS MEANS FOR AN INVESTOR</div>
+                      <p style={{color:C.text,fontSize:13.5,margin:"0 0 10px",lineHeight:1.6}}>{strat.description}</p>
+                      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                        <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:C.profit,fontSize:14}}>▲</span><span style={{color:C.muted,fontSize:13,lineHeight:1.5}}>On the upside, {pe.profitDesc}.</span></div>
+                        <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:C.loss,fontSize:14}}>▼</span><span style={{color:C.muted,fontSize:13,lineHeight:1.5}}>On the downside, {pe.lossDesc}.</span></div>
+                        <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:C.warning,fontSize:14}}>◆</span><span style={{color:C.muted,fontSize:13,lineHeight:1.5}}>{pe.beDesc}</span></div>
+                      </div>
+                    </div>
+                  ); })()}
+
+                  {/* ── REAL MONEY OUTCOMES — 3 concrete scenarios ── */}
                   <div style={{marginBottom:20}}>
-                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:12}}>AGGREGATE GREEKS</div>
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:6}}>WHAT YOU'D ACTUALLY MAKE OR LOSE</div>
+                    <div style={{color:C.muted,fontSize:11,marginBottom:12}}>If you put this trade on today with {ticker} at £{spotPrice}, here is your profit or loss on expiry day:</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                      {investorScenarios(selectedStrat, spotPrice, iv, T).map((sc,i)=>(
+                        <div key={i} style={{background:C.surface,border:`1px solid ${sc.color}44`,borderRadius:10,padding:"14px 12px",textAlign:"center"}}>
+                          <div style={{color:sc.color,fontSize:11,fontFamily:"Space Grotesk,sans-serif",fontWeight:700,marginBottom:8,letterSpacing:"0.03em"}}>{sc.label}</div>
+                          <div style={{color:C.muted,fontSize:10,marginBottom:6}}>{ticker} at £{sc.expS.toFixed(0)}</div>
+                          <div style={{color:sc.pnl>=0?C.profit:C.loss,fontSize:22,fontFamily:"JetBrains Mono,monospace",fontWeight:700}}>{sc.pnl>=0?"+":"−"}£{Math.abs(Math.round(sc.pnl)).toLocaleString()}</div>
+                          <div style={{color:C.muted,fontSize:9,marginTop:4}}>{sc.pnl>=0?"profit":"loss"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{marginBottom:20}}>
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"Space Grotesk,sans-serif",letterSpacing:"0.1em",marginBottom:6}}>AGGREGATE GREEKS</div>
+                    <div style={{color:C.muted,fontSize:11,marginBottom:12,lineHeight:1.5}}>The Greeks measure how sensitive this position is to market changes. Hover guidance: Delta = direction, Gamma = acceleration, Theta = daily time decay, Vega = volatility.</div>
                     <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
                       <GreekBadge label="DELTA Δ" value={result.greeks.delta} hint="£ per £1 spot"/>
                       <GreekBadge label="GAMMA Γ" value={result.greeks.gamma} hint="Delta change rate"/>
@@ -432,7 +501,7 @@
       // ── Positions ──
       if (screen==="positions") return (
         <div style={{minHeight:"100vh",background:C.bg,fontFamily:"Inter,sans-serif",color:C.text}}>
-          <Header title="Positions" back="dashboard"/>
+          <Header title="Positions"/>
           <div style={{maxWidth:1100,margin:"0 auto",padding:"28px 24px"}}>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:14,marginBottom:28}}>
               {[
@@ -479,6 +548,80 @@
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      );
+
+      // ── Guide / How To Use ──
+      if (screen==="guide") return (
+        <div style={{minHeight:"100vh",background:C.bg,fontFamily:"Inter,sans-serif",color:C.text}}>
+          <Header title="How to Use"/>
+          <div style={{maxWidth:860,margin:"0 auto",padding:"32px 24px"}}>
+            <h1 style={{color:C.text,fontSize:30,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",margin:"0 0 8px"}}>How to use StratOS</h1>
+            <p style={{color:C.muted,fontSize:15,margin:"0 0 28px",lineHeight:1.6}}>A 60-second guide. StratOS lets you test options strategies with virtual money before risking anything real. No prior options knowledge needed — follow these steps.</p>
+
+            {/* Step-by-step */}
+            <div style={{display:"flex",flexDirection:"column",gap:14,marginBottom:36}}>
+              {[
+                {n:"1",t:"Set your market view on the Home screen",d:"Type a stock ticker (e.g. AAPL) and use the three sliders: Spot Price (what the stock trades at now), Implied Volatility (how jumpy the stock is — higher means pricier options), and Days to Expiry (how long until the option expires). Every strategy card updates live as you move them."},
+                {n:"2",t:"Pick a strategy that matches your view",d:"Each card is colour-coded by risk: green = low risk, amber = medium, red = high. If you think the stock will rise, look at bullish strategies; if you want protection, look at puts and collars. Click any card to open it."},
+                {n:"3",t:"Read the 'What this means' panel",d:"On the strategy page, the blue box translates the maths into plain English — your maximum profit, maximum loss, and the price the stock needs to reach for you to make money. No jargon required."},
+                {n:"4",t:"Check the real-money outcomes",d:"The three outcome cards show exactly how much you'd make or lose if the stock goes up 10%, stays flat, or drops 10%. This is your profit or loss in pounds — the bottom line for any investor."},
+                {n:"5",t:"Paper trade it",d:"Click 'Paper Trade — Execute' to add the position to your virtual portfolio. Open the Positions tab any time to track your running profit and loss. It's all simulated — no real money is ever involved."},
+              ].map(({n,t,d})=>(
+                <div key={n} style={{display:"flex",gap:16,background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px"}}>
+                  <div style={{minWidth:34,height:34,borderRadius:"50%",background:`${C.accent}22`,border:`1px solid ${C.accent}`,color:C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontFamily:"Space Grotesk,sans-serif",fontWeight:700}}>{n}</div>
+                  <div>
+                    <div style={{color:C.text,fontSize:15,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",marginBottom:4}}>{t}</div>
+                    <div style={{color:C.muted,fontSize:13,lineHeight:1.6}}>{d}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* How to read the graph */}
+            <h2 style={{color:C.text,fontSize:20,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",margin:"0 0 14px"}}>How to read the payoff graph</h2>
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"20px",marginBottom:36}}>
+              {[
+                {c:C.accent,  l:"The blue line",      d:"Your profit or loss at every possible stock price on expiry day."},
+                {c:C.profit,  l:"The green zone",     d:"Prices where you make money (line is above the £0 mark)."},
+                {c:C.loss,    l:"The red zone",       d:"Prices where you lose money (line is below the £0 mark)."},
+                {c:C.warning, l:"The orange 'SPOT' line",d:"Where the stock trades right now, for reference."},
+                {c:C.muted,   l:"The dashed £0 line", d:"Break-even. Where the blue line crosses it, you neither gain nor lose."},
+              ].map(({c,l,d},i)=>(
+                <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",padding:"8px 0",borderBottom:i<4?`1px solid ${C.border}`:"none"}}>
+                  <div style={{minWidth:14,height:14,borderRadius:3,background:c,marginTop:2}}/>
+                  <div><span style={{color:C.text,fontSize:13,fontWeight:600}}>{l}</span> <span style={{color:C.muted,fontSize:13}}>— {d}</span></div>
+                </div>
+              ))}
+            </div>
+
+            {/* Key terms glossary */}
+            <h2 style={{color:C.text,fontSize:20,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",margin:"0 0 14px"}}>Key terms in plain English</h2>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:36}}>
+              {[
+                {t:"Call option",d:"The right to BUY a stock at a set price. You want the stock to rise."},
+                {t:"Put option",d:"The right to SELL a stock at a set price. You want the stock to fall (or you're protecting it)."},
+                {t:"Strike price",d:"The fixed price written into the option contract."},
+                {t:"Premium",d:"The price you pay to buy an option, or collect when you sell one."},
+                {t:"Break-even",d:"The stock price at which you start making a profit."},
+                {t:"Expiry",d:"The date the option contract ends and is settled."},
+                {t:"Delta (Δ)",d:"How much the position gains or loses for each £1 the stock moves."},
+                {t:"Theta (Θ)",d:"How much value the position loses each day, just from time passing."},
+              ].map(({t,d},i)=>(
+                <div key={i} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,padding:"14px 16px"}}>
+                  <div style={{color:C.accent,fontSize:13,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",marginBottom:4}}>{t}</div>
+                  <div style={{color:C.muted,fontSize:12.5,lineHeight:1.5}}>{d}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{background:`${C.warning}12`,border:`1px solid ${C.warning}44`,borderRadius:12,padding:"16px 20px",marginBottom:28}}>
+              <div style={{color:C.warning,fontSize:12,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",marginBottom:6}}>⚠ IMPORTANT</div>
+              <p style={{color:C.muted,fontSize:13,margin:0,lineHeight:1.6}}>StratOS is an educational paper-trading tool. All trades are simulated with virtual money. Options carry significant real-world risk, including the loss of your entire premium. This is not financial advice.</p>
+            </div>
+
+            <button onClick={()=>setScreen("dashboard")} style={{background:C.accent,color:C.bg,border:"none",borderRadius:10,padding:"14px 28px",fontSize:14,fontWeight:700,fontFamily:"Space Grotesk,sans-serif",cursor:"pointer"}}>⌂ Got it — take me to the platform →</button>
           </div>
         </div>
       );
